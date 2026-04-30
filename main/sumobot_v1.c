@@ -5,26 +5,28 @@
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
 #include "services/gap/ble_svc_gap.h"
-#include "host/util/util.h" // Add this at the top
+#include "host/util/util.h" 
+#include "driver/gpio.h"
+#include "driver/ledc.h"
+
+#include "motor_control.h"
+/* if session is restarted enter
+. $HOME/esp/esp-idf/export.sh
+cd ~/Desktop/sumo/sumobot_v1
+idf.py --version
+idf.py flash monitor
+ */
+
 
 static const char *TAG = "XBOX_SCAN";
 static uint16_t conn_handle; // Stores the active connection ID
 
+
+//init functions
 void ble_app_on_sync(void);
-
-long hex_to_int(const char *hex_str) {
-    char *endptr;
-    // The '16' tells the function to interpret the string as Hexadecimal
-    long value = strtol(hex_str, &endptr, 16);
-
-    // Check if the string was actually a valid hex number
-    if (hex_str == endptr) {
-        printf("Error: No valid hex digits found.\n");
-        return 0;
-    }
-
-    return value;
-}
+long hex_to_int(const char *hex_str);
+static int ble_gap_connect_event(struct ble_gap_event *event, void *arg);
+static int ble_gap_event(struct ble_gap_event *event, void *arg);
 
 // This runs when the connection status changes
 static int ble_gap_connect_event(struct ble_gap_event *event, void *arg) {
@@ -55,19 +57,20 @@ static int ble_gap_connect_event(struct ble_gap_event *event, void *arg) {
             }
             return 0;
         case BLE_GAP_EVENT_NOTIFY_RX:
-            // This is where the raw joystick data arrives!
+            // raw joystick data
             int Lx = event->notify_rx.om->om_data[1]-128;
             int Ly = event->notify_rx.om->om_data[3]-128;
             int Rx = event->notify_rx.om->om_data[5]-128;
             int Ry = event->notify_rx.om->om_data[7]-128;
-            unsigned int Lt = event->notify_rx.om->om_data[8]*event->notify_rx.om->om_data[9];
-            unsigned int Rt = event->notify_rx.om->om_data[10]*event->notify_rx.om->om_data[11];
-            printf("Received Data: ");
+            unsigned int Lt = event->notify_rx.om->om_data[8]*event->notify_rx.om->om_data[9]/3;
+            unsigned int Rt = event->notify_rx.om->om_data[10]*event->notify_rx.om->om_data[11]/3;
+            handle_controller(Lx, Lt, Rt);
+            //printf("Received Data: ");
             //for (int i = 0; i < event->notify_rx.om->om_len; i++) {
             //    printf("%02x ", event->notify_rx.om->om_data[i]);
             //}
-            printf("Left X: %d, Left Y: %d, Right X: %d, Right Y: %d, Left Trigger: %u, Right Trigger %u", Lx, Ly, Rx, Ry, Lt, Rt);
-            printf("\n");
+            //printf("Left X: %d, Left Y: %d, Right X: %d, Right Y: %d, Left Trigger: %u, Right Trigger %u", Lx, Ly, Rx, Ry, Lt, Rt);
+            //printf("\n");
             return 0;
         case BLE_GAP_EVENT_DISCONNECT:
             ESP_LOGI(TAG, "DISCONNECTED. Reason: %d. Resuming scan...", event->disconnect.reason);
@@ -85,11 +88,27 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
         if (fields.name_len > 0 && strncmp((char *)fields.name, "Xbox Wireless Controller", fields.name_len) == 0) {
             ESP_LOGI(TAG, "XBOX SPOTTED! Attempting to connect...");
             
-            // STOP scanning so we can connect
+            // 1. STOP scanning
             ble_gap_disc_cancel();
 
-            // CONNECT to the address we just found
-            ble_gap_connect(BLE_OWN_ADDR_PUBLIC, &event->disc.addr, 30000, NULL, ble_gap_connect_event, NULL);
+            // 2. Define the "Patience" of the connection
+            struct ble_gap_conn_params params = {
+                .scan_itvl = 16,
+                .scan_window = 16,
+                .itvl_min = 24,               // 30ms connection interval
+                .itvl_max = 40,               // 50ms connection interval
+                .latency = 0,
+                .supervision_timeout = 512,     // 5.12 seconds (Crucial for stability)
+                .min_ce_len = 0,
+                .max_ce_len = 0,
+            };
+
+            // 3. CONNECT using the params
+            int rc = ble_gap_connect(BLE_OWN_ADDR_PUBLIC, &event->disc.addr, 30000, &params, ble_gap_connect_event, NULL);
+            
+            if (rc != 0) {
+                ESP_LOGE(TAG, "Error: Failed to initiate connection; rc=%d", rc);
+            }
         }
     }
     return 0;
@@ -106,7 +125,8 @@ void host_task(void *param) {
 }
 
 void app_main(void) {
-    // 1. Initialize NVS (CRITICAL for Bluetooth)
+    init_motors();
+    // 1. Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
