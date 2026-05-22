@@ -1,6 +1,4 @@
-========================================================================
 SUMOBOT V1: ESP32-POWERED SUMO ROBOT
-========================================================================
 
 A custom-built Sumo robot featuring an ESP32 microcontroller, differential 
 drive system, and wireless Xbox controller Bluetooth integration.
